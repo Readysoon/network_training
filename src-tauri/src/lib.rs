@@ -28,7 +28,23 @@ fn scan_network() {
     }
 }
 
-// Die Funktion findt alle Geräte im Netzwerk
+// Die Funktion pingt a Gerät und schaut, ob es antwortet
+fn ping_host(ip: &Ipv4Addr) -> bool {
+    let (command, args) = if cfg!(target_os = "windows") {
+        ("ping", &["-n", "1", "-w", "50", &ip.to_string()] as &[&str])
+    } else {
+        ("ping", &["-c", "1", "-W", "1", &ip.to_string()] as &[&str])
+    };
+    
+    let output = Command::new(command).args(args).output();
+    
+    match output {
+        Ok(output) => output.status.success(), // Wenn ping erfolgreich war
+        Err(_) => false
+    }
+}
+
+// Die Funktion findt alle Geräte im Netzwerk (schnell!)
 fn find_all_devices() -> Vec<Ipv4Addr> {
     let mut devices = Vec::new();
     
@@ -36,10 +52,37 @@ fn find_all_devices() -> Vec<Ipv4Addr> {
     if let Some(network) = get_local_network() {
         println!("🌐 Scanning {}.{}.{}.x network...", network.0, network.1, network.2);
         
-        // Von 1 bis 254 durchgehe und schaue, was antwortet
+        // Finde unser eigene IP
+        let own_ip = get_own_ip();
+        println!("🏠 Own IP: {}", own_ip);
+        
+        // Erstelle alle IPs zum Testen
+        let mut ips_to_test = Vec::new();
         for i in 1..=254 {
             let ip = Ipv4Addr::new(network.0, network.1, network.2, i);
-            if ping_host(&ip) {
+            if ip != own_ip {
+                ips_to_test.push(ip);
+            }
+        }
+        
+        println!("🚀 Testing {} IPs in parallel...", ips_to_test.len());
+        
+        // Teste alle IPs parallel mit Threads
+        let mut handles = Vec::new();
+        for ip in ips_to_test {
+            let handle = thread::spawn(move || {
+                if ping_host(&ip) {
+                    Some(ip)
+                } else {
+                    None
+                }
+            });
+            handles.push(handle);
+        }
+        
+        // Sammle alle Ergebnisse
+        for handle in handles {
+            if let Ok(Some(ip)) = handle.join() {
                 println!("   ✅ Found device at {}", ip);
                 devices.push(ip);
             }
@@ -49,58 +92,40 @@ fn find_all_devices() -> Vec<Ipv4Addr> {
     devices
 }
 
-// Die Funktion schaut, welche Geräte unser Tauri App han
-fn find_tauri_apps(devices: &[Ipv4Addr]) -> Vec<String> {
-    let mut tauri_apps = Vec::new();
+// Die Funktion findt unser eigene IP
+fn get_own_ip() -> Ipv4Addr {
+    // Gucke, welches Betriebssystem wir han
+    let (command, args) = if cfg!(target_os = "windows") {
+        ("ipconfig", &[] as &[&str])
+    } else {
+        ("hostname", &["-I"] as &[&str])
+    };
     
-    for device in devices {
-        // Versuche, zum Port 54321 zu verbinde (des isch unser spezieller Port)
-        if let Ok(mut stream) = TcpStream::connect_timeout(
-            &format!("{}:54321", device).parse().unwrap(),
-            Duration::from_millis(100)
-        ) {
-            // Schick a "PING_TAURI_APP" Nachricht
-            let message = "PING_TAURI_APP\n";
-            if let Ok(_) = stream.write_all(message.as_bytes()) {
-                // Warte auf Antwort
-                let mut response = [0; 100];
-                if let Ok(_) = stream.read(&mut response) {
-                    let response_str = String::from_utf8_lossy(&response);
-                    // Wenn die Antwort "TAURI_APP_HERE" enthält, dann han die unser App
-                    if response_str.contains("TAURI_APP_HERE") {
-                        println!("   🤝 Tauri app found at {}", device);
-                        tauri_apps.push(format!("Tauri app at {}", device));
-                    }
-                }
-            }
-        }
-    }
-    
-    tauri_apps
-}
-
-// Die Funktion findt raus, welches Netzwerk wir han (192.168.178.x)
-fn get_local_network() -> Option<(u8, u8, u8)> {
-    let output = Command::new("ipconfig").output();
+    let output = Command::new(command).args(args).output();
     
     match output {
         Ok(output) => {
             let output_str = String::from_utf8_lossy(&output.stdout);
-            for line in output_str.lines() {
-                // Gucke nach "192.168" in der ipconfig Ausgabe
-                if line.contains("IPv4") && line.contains("192.168") {
-                    if let Some(ip_part) = line.split(':').nth(1) {
-                        let ip = ip_part.trim();
-                        // Die IP in Teile aufteile (192.168.178.98 -> 192, 168, 178)
-                        if let Some(parts) = ip.split('.').collect::<Vec<_>>().get(0..3) {
-                            if parts.len() == 3 {
-                                if let (Ok(a), Ok(b), Ok(c)) = (
-                                    parts[0].parse::<u8>(),
-                                    parts[1].parse::<u8>(),
-                                    parts[2].parse::<u8>()
-                                ) {
-                                    return Some((a, b, c));
-                                }
+            
+            if cfg!(target_os = "windows") {
+                // Windows: ipconfig
+                for line in output_str.lines() {
+                    if line.contains("IPv4") && line.contains("192.168") {
+                        if let Some(ip_part) = line.split(':').nth(1) {
+                            let ip = ip_part.trim();
+                            if let Ok(parsed_ip) = ip.parse::<Ipv4Addr>() {
+                                return parsed_ip;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Linux/Mac: hostname -I
+                for line in output_str.lines() {
+                    for part in line.split_whitespace() {
+                        if part.contains("192.168") {
+                            if let Ok(parsed_ip) = part.parse::<Ipv4Addr>() {
+                                return parsed_ip;
                             }
                         }
                     }
@@ -110,20 +135,75 @@ fn get_local_network() -> Option<(u8, u8, u8)> {
         Err(_) => {}
     }
     
-    None
+    // Fallback: Default IP
+    Ipv4Addr::new(192, 168, 178, 98)
 }
 
-// Die Funktion pingt a Gerät und schaut, ob es antwortet
-fn ping_host(ip: &Ipv4Addr) -> bool {
-    let output = Command::new("ping")
-        .args(&["-n", "1", "-w", "100", &ip.to_string()])
-        .output();
+
+// Die Funktion schaut, welche Geräte unser Tauri App han
+fn find_tauri_apps(devices: &[Ipv4Addr]) -> Vec<String> {
+    let mut tauri_apps = Vec::new();
     
-    match output {
-        Ok(output) => output.status.success(), // Wenn ping erfolgreich war
-        Err(_) => false
+    for device in devices {
+        println!("🔍 Testing device {} for Tauri app...", device);
+        
+        // Versuche, zum Port 54321 zu verbinde (des isch unser spezieller Port)
+        match TcpStream::connect_timeout(
+            &format!("{}:54321", device).parse().unwrap(),
+            Duration::from_millis(500) // Länger warten
+        ) {
+            Ok(mut stream) => {
+                println!("   ✅ Connected to {}:54321", device);
+                
+                // Schick a "PING_TAURI_APP" Nachricht
+                let message = "PING_TAURI_APP\n";
+                match stream.write_all(message.as_bytes()) {
+                    Ok(_) => {
+                        println!("   📤 Sent ping to {}", device);
+                        
+                        // Warte auf Antwort
+                        let mut response = [0; 100];
+                        match stream.read(&mut response) {
+                            Ok(_) => {
+                                let response_str = String::from_utf8_lossy(&response);
+                                println!("   📥 Received: '{}'", response_str.trim());
+                                
+                                // Wenn die Antwort "TAURI_APP_HERE" enthält, dann han die unser App
+                                if response_str.contains("TAURI_APP_HERE") {
+                                    println!("   🤝 Tauri app found at {}", device);
+                                    tauri_apps.push(format!("Tauri app at {}", device));
+                                } else {
+                                    println!("   ❌ No Tauri app response from {}", device);
+                                }
+                            }
+                            Err(e) => {
+                                println!("   ❌ Could not read response from {}: {}", device, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("   ❌ Could not send ping to {}: {}", device, e);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("   ❌ Could not connect to {}:54321 - {}", device, e);
+            }
+        }
     }
+    
+    tauri_apps
 }
+
+// Die Funktion findt raus, welches Netzwerk wir han (192.168.178.x)
+fn get_local_network() -> Option<(u8, u8, u8)> {
+    let own_ip = get_own_ip();
+    
+    // Von unser eigene IP das Netzwerk ableite
+    let octets = own_ip.octets();
+    Some((octets[0], octets[1], octets[2]))
+}
+
 
 // Des isch die Hauptfunktion von Tauri - die startet alles
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
