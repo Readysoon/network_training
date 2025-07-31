@@ -37,6 +37,7 @@
   let patients: Patient[] = [];
   let connectedPeers: ConnectedPeer[] = [];
   let syncStatus = "Initializing...";
+  let lastRefresh = "";
 
   // New patient form
   let newPatient = {
@@ -50,8 +51,23 @@
     gun = Gun(['http://localhost:8765']); // Default Gun peer
     
     // Listen for patients
-    gun.get('patients').map().on((data: any, key: string) => {
-      if (data && key !== '_') {
+    refreshPatientList();
+
+    syncStatus = "Ready - Local only";
+    
+    // Set up periodic refresh every 10 seconds
+    setInterval(() => {
+      refreshPatientList();
+    }, 10000);
+  }
+
+  // Refresh patient list from GunDB
+  function refreshPatientList() {
+    // Clear current patients and reload from Gun
+    patients = [];
+    
+    gun.get('patients').map().once((data: any, key: string) => {
+      if (data && key !== '_' && data.name) {
         const patient: Patient = {
           id: key,
           name: data.name || '',
@@ -62,13 +78,12 @@
         
         // Update patients list
         patients = patients.filter(p => p.id !== key);
-        if (data.name) { // Only add if not deleted
-          patients = [...patients, patient];
-        }
+        patients = [...patients, patient];
       }
     });
-
-    syncStatus = "Ready - Local only";
+    
+    // Update last refresh time
+    lastRefresh = new Date().toLocaleTimeString();
   }
 
   onMount(async () => {
@@ -137,6 +152,12 @@
       connectedPeers = [...connectedPeers, peer];
       
       updateSyncStatus();
+      
+      // Refresh patient list after connecting to new peer
+      setTimeout(() => {
+        refreshPatientList();
+      }, 1000); // Small delay to allow connection to establish
+      
       return true;
     } catch (error) {
       console.error("Failed to connect to Gun peer:", error);
@@ -300,7 +321,15 @@
       </div>
 
       <div class="patient-list">
-        <h3>📋 Current Patients ({patients.length})</h3>
+        <div class="patient-list-header">
+          <h3>📋 Current Patients ({patients.length})</h3>
+          <div class="refresh-controls">
+            <button class="refresh-btn" on:click={refreshPatientList}>🔄 Refresh</button>
+            {#if lastRefresh}
+              <span class="last-refresh">Last updated: {lastRefresh}</span>
+            {/if}
+          </div>
+        </div>
         {#if patients.length === 0}
           <p class="no-patients">No patients in database.</p>
         {:else}
@@ -514,6 +543,35 @@
     border-bottom: 1px solid #dee2e6;
   }
 
+  .patient-list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+  }
+
+  .refresh-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .refresh-btn {
+    background: #28a745;
+    font-size: 14px;
+    padding: 8px 12px;
+  }
+
+  .refresh-btn:hover {
+    background: #218838;
+  }
+
+  .last-refresh {
+    font-size: 0.8em;
+    color: #666;
+    font-style: italic;
+  }
+
   @media (max-width: 768px) {
     .patient-form {
       grid-template-columns: 1fr;
@@ -521,6 +579,12 @@
     
     .input-group {
       flex-direction: column;
+    }
+
+    .patient-list-header {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
     }
   }
 </style>

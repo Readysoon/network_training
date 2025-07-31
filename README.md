@@ -18,7 +18,12 @@ A Tauri-based application that creates a distributed medical patient database us
 ### 🔄 Synchronization
 - **Peer-to-Peer**: Direct connections between devices without central server
 - **Auto-Discovery**: Automatically connects to GunDB peers on successfully tested IPs
+- **Multi-Level Refresh**: 
+  - Automatic refresh when new peers connect
+  - Periodic refresh every 10 seconds
+  - Manual refresh button for immediate updates
 - **Sync Status**: Visual indicators showing connection status and number of active peers
+- **Last Update Timestamp**: Shows when patient data was last refreshed
 - **Offline Capable**: Works locally and syncs when connections are restored
 
 ## 🚀 Quick Start
