@@ -1,5 +1,5 @@
 <script>
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "@tauri-apps/api/tauri";
   import { onMount } from "svelte";
 
   let ownIp = "";
@@ -255,4 +255,4 @@
   .remove-btn:hover {
     background: #c82333;
   }
-</style>
+</style> 
