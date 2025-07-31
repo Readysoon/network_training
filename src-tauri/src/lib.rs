@@ -12,14 +12,12 @@ fn greet(name: &str) -> String {
 
 // Get own IP address
 #[tauri::command]
-fn get_own_ip() -> String {
-    let (command, args) = if cfg!(target_os = "windows") {
-        ("ipconfig", &[] as &[&str])
+fn get_own_ip() -> Result<String, String> {
+    let output = if cfg!(target_os = "windows") {
+        Command::new("ipconfig").output()
     } else {
-        ("hostname", &["-I"] as &[&str])
+        Command::new("ifconfig").output()
     };
-    
-    let output = Command::new(command).args(args).output();
     
     match output {
         Ok(output) => {
@@ -28,33 +26,41 @@ fn get_own_ip() -> String {
             if cfg!(target_os = "windows") {
                 // Windows: ipconfig
                 for line in output_str.lines() {
-                    if line.contains("IPv4") && line.contains("192.168") {
+                    if line.contains("IPv4") && (line.contains("192.168") || line.contains("10.0")) {
                         if let Some(ip_part) = line.split(':').nth(1) {
                             let ip = ip_part.trim();
                             if let Ok(_) = ip.parse::<Ipv4Addr>() {
-                                return ip.to_string();
+                                return Ok(ip.to_string());
                             }
                         }
                     }
                 }
             } else {
-                // Linux/Mac: hostname -I
+                // macOS/Linux: ifconfig
                 for line in output_str.lines() {
-                    for part in line.split_whitespace() {
-                        if part.contains("192.168") {
-                            if let Ok(_) = part.parse::<Ipv4Addr>() {
-                                return part.to_string();
+                    if line.trim().starts_with("inet ") && 
+                       (line.contains("192.168") || line.contains("10.0")) {
+                        let parts: Vec<&str> = line.trim().split_whitespace().collect();
+                        if parts.len() >= 2 {
+                            let ip = parts[1];
+                            if let Ok(parsed_ip) = ip.parse::<Ipv4Addr>() {
+                                // Skip loopback
+                                if !parsed_ip.is_loopback() {
+                                    return Ok(ip.to_string());
+                                }
                             }
                         }
                     }
                 }
             }
+            
+            Err("No local IP address found in private ranges (192.168.x.x or 10.0.x.x)".to_string())
         }
-        Err(_) => {}
+        Err(e) => {
+            let command_name = if cfg!(target_os = "windows") { "ipconfig" } else { "ifconfig" };
+            Err(format!("Failed to execute {}: {}", command_name, e))
+        }
     }
-    
-    // Fallback
-    "192.168.178.98".to_string()
 }
 
 // Test if an IP has the Tauri app
