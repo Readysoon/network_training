@@ -48,17 +48,31 @@
 
   // Initialize GunDB
   function initGun() {
-    gun = Gun(['http://localhost:8765']); // Default Gun peer
+    // Initialize Gun with local server
+    gun = Gun(['http://localhost:8765']);
+    
+    console.log('🔧 GunDB initialized');
     
     // Listen for patients
-    refreshPatientList();
+    gun.get('patients').map().on((data: any, key: string) => {
+      if (data && key !== '_') {
+        const patient: Patient = {
+          id: key,
+          name: data.name || '',
+          age: data.age || 0,
+          diagnosis: data.diagnosis || '',
+          timestamp: data.timestamp || ''
+        };
+        
+        // Update patients list
+        patients = patients.filter(p => p.id !== key);
+        if (data.name) { // Only add if not deleted
+          patients = [...patients, patient];
+        }
+      }
+    });
 
     syncStatus = "Ready - Local only";
-    
-    // Set up periodic refresh every 10 seconds
-    setInterval(() => {
-      refreshPatientList();
-    }, 10000);
   }
 
   // Refresh patient list from GunDB
@@ -137,28 +151,38 @@
 
   async function connectToGunPeer(ip: string): Promise<boolean> {
     try {
+      console.log(`🔗 Attempting to connect to Gun peer at ${ip}:8765`);
+      
       // Add peer to Gun network
       const peerUrl = `http://${ip}:8765`;
       gun.opt({ peers: [peerUrl] });
       
-      // Add to connected peers
-      const peer: ConnectedPeer = {
-        ip: ip,
-        connected: true,
-        lastSeen: new Date().toLocaleTimeString()
-      };
-      
-      connectedPeers = connectedPeers.filter(p => p.ip !== ip);
-      connectedPeers = [...connectedPeers, peer];
-      
-      updateSyncStatus();
-      
-      // Refresh patient list after connecting to new peer
-      setTimeout(() => {
-        refreshPatientList();
-      }, 1000); // Small delay to allow connection to establish
-      
-      return true;
+      // Test connection by trying to read from peer
+      return new Promise((resolve) => {
+        const testRef = gun.get('test').get('connection');
+        testRef.on((data: any) => {
+          console.log(`✅ Successfully connected to Gun peer at ${ip}`);
+          
+          // Add to connected peers
+          const peer: ConnectedPeer = {
+            ip: ip,
+            connected: true,
+            lastSeen: new Date().toLocaleTimeString()
+          };
+          
+          connectedPeers = connectedPeers.filter(p => p.ip !== ip);
+          connectedPeers = [...connectedPeers, peer];
+          
+          updateSyncStatus();
+          resolve(true);
+        });
+        
+        // Timeout after 3 seconds
+        setTimeout(() => {
+          console.log(`❌ Failed to connect to Gun peer at ${ip} (timeout)`);
+          resolve(false);
+        }, 3000);
+      });
     } catch (error) {
       console.error("Failed to connect to Gun peer:", error);
       return false;
